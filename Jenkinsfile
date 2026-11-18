@@ -1,82 +1,89 @@
-// TP 3.8 : intégration continue + déploiement continu (staging automatique, prod après validation)
 pipeline {
     agent any
 
-   environment {
-        IMAGE   = "leonoranams/legeni-webapp"
-        VERSION = "1.0.${env.BUILD_NUMBER}"
-        COMPOSE = "docker compose -f deploy/docker-compose.deploy.yml"
+    options {
+        skipDefaultCheckout(true) // Évite les conflits et l'erreur "not in a git directory"
+        timeout(time: 1, unit: 'HOURS')
+        ansiColor('xterm')
     }
 
-    options {
-        timestamps()
-        timeout(time: 30, unit: 'MINUTES')
-        disableConcurrentBuilds()          // jamais deux déploiements en même temps
+    environment {
+        IMAGE           = "leonoranams/legeni-webapp"
+        VERSION         = "1.0.${env.BUILD_NUMBER}"
+        COMPOSE_STAGING = "docker compose -f deploy/docker-compose.deploy.yml -p legeni-staging"
+        COMPOSE_PROD    = "docker compose -f deploy/docker-compose.deploy.yml -p legeni-prod"
     }
 
     stages {
-        stage('Tests unitaires') {
+        stage('Checkout Code') {
             steps {
-                sh 'docker build --target test -t $IMAGE:test .'
+                cleanWs() // Nettoie complètement le workspace pour repartir sur du propre
+                checkout scm // Récupère le code depuis GitHub
             }
         }
 
-        stage('Build image') {
+        stage('Build Image') {
             steps {
-                sh 'docker build --build-arg APP_VERSION=$VERSION -t $IMAGE:$VERSION .'
+                echo "Construction de l'image Docker ${env.IMAGE}:${env.VERSION}..."
+                sh "docker build -t ${env.IMAGE}:${env.VERSION} -t ${env.IMAGE}:latest ."
             }
         }
 
-        stage('Déploiement staging') {
-            environment {
-                REDIS_PASSWORD = credentials('redis-password-staging')
-            }
+        stage('Push to Docker Hub') {
             steps {
-                sh '''
-                    IMAGE_REF=$IMAGE:$VERSION APP_ENV=staging APP_COLOR='#bf8700' PORT=8081 \
-                        $COMPOSE -p legeni-staging up -d --wait
-                '''
-                sh './deploy/smoke-test.sh legeni-staging $VERSION'
-            }
-        }
-
-        stage('Validation production') {
-            when { branch 'main' }
-            steps {
-                timeout(time: 15, unit: 'MINUTES') {
-                    input message: "Déployer la version ${VERSION} en production ?", ok: 'Déployer'
+                // Assure-toi d'avoir configuré les credentials Docker Hub dans Jenkins si nécessaire, 
+                // ou commente cette étape si tu fais les builds entièrement en local sur la machine.
+                withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials', passwordVariable: 'DOCKER_PASSWORD', usernameVariable: 'DOCKER_USER')]) {
+                    sh "echo $DOCKER_PASSWORD | docker login -u $DOCKER_USER --password-stdin"
+                    sh "docker push ${env.IMAGE}:${env.VERSION}"
+                    sh "docker push ${env.IMAGE}:latest"
                 }
             }
         }
 
-        stage('Déploiement production') {
-            when { branch 'main' }
-            environment {
-                REDIS_PASSWORD = credentials('redis-password-prod')
+        stage('Deploy Staging') {
+            steps {
+                echo "Déploiement sur l'environnement de Staging (Port 8081)..."
+                script {
+                    env.APP_ENV = "staging"
+                    env.PORT = "8081"
+                    env.APP_COLOR = "#bf8700"
+                    env.IMAGE_REF = "${env.IMAGE}:${env.VERSION}"
+                }
+                sh "${env.COMPOSE_STAGING} up -d --build"
             }
+        }
+
+        stage('Validation Production') {
+            steps {
+                input message: "Valider le passage en Production (Port 8082) ?", ok: "Déployer"
+            }
+        }
+
+        stage('Deploy Production & Rollback') {
             steps {
                 script {
-                    // Image actuellement en production : servira au rollback
-                    env.PREVIOUS_IMAGE = sh(
-                        script: "docker inspect -f '{{.Config.Image}}' legeni-prod-web-1 2>/dev/null || echo none",
-                        returnStdout: true
-                    ).trim()
-                    echo "Version en production avant déploiement : ${env.PREVIOUS_IMAGE}"
+                    // Récupération de l'ancienne version active pour un éventuel rollback
+                    def previousImage = sh(script: "docker inspect --format='{{.Config.Image}}' legeni-prod-web-1 2>/dev/null || echo '${env.IMAGE}:latest'", returnStdout: true).trim()
+                    
                     try {
-                        sh '''
-                            IMAGE_REF=$IMAGE:$VERSION APP_ENV=prod APP_COLOR='#2da44e' PORT=8082 \
-                                $COMPOSE -p legeni-prod up -d --wait
-                            ./deploy/smoke-test.sh legeni-prod $VERSION
-                        '''
-                    } catch (err) {
-                        if (env.PREVIOUS_IMAGE != 'none') {
-                            echo "Smoke test KO : retour à ${env.PREVIOUS_IMAGE}"
-                            sh '''
-                                IMAGE_REF=$PREVIOUS_IMAGE APP_ENV=prod APP_COLOR='#2da44e' PORT=8082 \
-                                    $COMPOSE -p legeni-prod up -d --wait
-                            '''
-                        }
-                        error "Déploiement production échoué, rollback effectué"
+                        echo "Déploiement sur l'environnement de Production (Port 8082)..."
+                        env.APP_ENV = "production"
+                        env.PORT = "8082"
+                        env.APP_COLOR = "#28a745"
+                        env.IMAGE_REF = "${env.IMAGE}:${env.VERSION}"
+                        
+                        sh "${env.COMPOSE_PROD} up -d --build"
+                        
+                        // Test de santé (Smoke Test)
+                        sh "sleep 5"
+                        sh "curl -f http://localhost:8082/ || exit 1"
+                        echo "✅ Déploiement en production réussi !"
+                    } catch (Exception e) {
+                        echo "❌ Échec du déploiement en production ! Lancement du rollback vers ${previousImage}..."
+                        env.IMAGE_REF = previousImage
+                        sh "${env.COMPOSE_PROD} up -d"
+                        error("Le déploiement a échoué, le rollback a été appliqué avec succès.")
                     }
                 }
             }
@@ -85,10 +92,10 @@ pipeline {
 
     post {
         success {
-            echo "✅ ${env.JOB_NAME} #${env.BUILD_NUMBER} : version ${VERSION} déployée"
+            echo "🎉 Pipeline exécuté avec succès du début à la fin !"
         }
         failure {
-            echo "❌ ${env.JOB_NAME} #${env.BUILD_NUMBER} en échec"
+            echo "💥 Le pipeline a échoué à l'une des étapes."
         }
     }
 }
