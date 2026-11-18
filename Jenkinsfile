@@ -2,8 +2,8 @@
 pipeline {
     agent any
 
-    environment {
-        IMAGE   = "legeni-webapp"
+   environment {
+        IMAGE   = "leonoranams/legeni-webapp"
         VERSION = "1.0.${env.BUILD_NUMBER}"
         COMPOSE = "docker compose -f deploy/docker-compose.deploy.yml"
     }
