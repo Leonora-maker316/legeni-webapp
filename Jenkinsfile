@@ -2,9 +2,8 @@ pipeline {
     agent any
 
     options {
-        skipDefaultCheckout(true) // Évite les conflits et l'erreur "not in a git directory"
+        skipDefaultCheckout(true)
         timeout(time: 1, unit: 'HOURS')
-        ansiColor('xterm')
     }
 
     environment {
@@ -17,8 +16,8 @@ pipeline {
     stages {
         stage('Checkout Code') {
             steps {
-                cleanWs() // Nettoie complètement le workspace pour repartir sur du propre
-                checkout scm // Récupère le code depuis GitHub
+                cleanWs()
+                checkout scm
             }
         }
 
@@ -31,8 +30,6 @@ pipeline {
 
         stage('Push to Docker Hub') {
             steps {
-                // Assure-toi d'avoir configuré les credentials Docker Hub dans Jenkins si nécessaire, 
-                // ou commente cette étape si tu fais les builds entièrement en local sur la machine.
                 withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials', passwordVariable: 'DOCKER_PASSWORD', usernameVariable: 'DOCKER_USER')]) {
                     sh "echo $DOCKER_PASSWORD | docker login -u $DOCKER_USER --password-stdin"
                     sh "docker push ${env.IMAGE}:${env.VERSION}"
@@ -63,7 +60,6 @@ pipeline {
         stage('Deploy Production & Rollback') {
             steps {
                 script {
-                    // Récupération de l'ancienne version active pour un éventuel rollback
                     def previousImage = sh(script: "docker inspect --format='{{.Config.Image}}' legeni-prod-web-1 2>/dev/null || echo '${env.IMAGE}:latest'", returnStdout: true).trim()
                     
                     try {
@@ -75,7 +71,6 @@ pipeline {
                         
                         sh "${env.COMPOSE_PROD} up -d --build"
                         
-                        // Test de santé (Smoke Test)
                         sh "sleep 5"
                         sh "curl -f http://localhost:8082/ || exit 1"
                         echo "✅ Déploiement en production réussi !"
