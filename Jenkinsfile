@@ -75,8 +75,11 @@ pipeline {
                             sh "${env.COMPOSE_PROD} up -d --build"
                         }
                         
-                        sh "sleep 5"
-                        sh "curl -f http://localhost:8082/ || exit 1"
+                        // Laisse le temps au conteneur de démarrer et de se stabiliser
+                        sh "sleep 10"
+                        
+                        // Test de santé robuste testant l'IP hôte/passerelle et localhost
+                        sh "curl -f http://172.17.0.1:8082/ || curl -f http://localhost:8082/ || exit 1"
                         echo "✅ Déploiement en production réussi !"
                     } catch (Exception e) {
                         echo "❌ Échec du déploiement en production ! Lancement du rollback vers ${previousImage}..."
