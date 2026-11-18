@@ -30,7 +30,7 @@ pipeline {
 
         stage('Push to Docker Hub') {
             steps {
-              withCredentials([usernamePassword(credentialsId: 'dockerhub', passwordVariable: 'DOCKER_PASSWORD', usernameVariable: 'DOCKER_USER')]) {
+                withCredentials([usernamePassword(credentialsId: 'dockerhub', passwordVariable: 'DOCKER_PASSWORD', usernameVariable: 'DOCKER_USER')]) {
                     sh "echo $DOCKER_PASSWORD | docker login -u $DOCKER_USER --password-stdin"
                     sh "docker push ${env.IMAGE}:${env.VERSION}"
                     sh "docker push ${env.IMAGE}:latest"
@@ -47,7 +47,9 @@ pipeline {
                     env.APP_COLOR = "#bf8700"
                     env.IMAGE_REF = "${env.IMAGE}:${env.VERSION}"
                 }
-                sh "${env.COMPOSE_STAGING} up -d --build"
+                withCredentials([string(credentialsId: 'redis-password-staging', variable: 'REDIS_PASSWORD')]) {
+                    sh "${env.COMPOSE_STAGING} up -d --build"
+                }
             }
         }
 
@@ -69,7 +71,9 @@ pipeline {
                         env.APP_COLOR = "#28a745"
                         env.IMAGE_REF = "${env.IMAGE}:${env.VERSION}"
                         
-                        sh "${env.COMPOSE_PROD} up -d --build"
+                        withCredentials([string(credentialsId: 'redis-password-prod', variable: 'REDIS_PASSWORD')]) {
+                            sh "${env.COMPOSE_PROD} up -d --build"
+                        }
                         
                         sh "sleep 5"
                         sh "curl -f http://localhost:8082/ || exit 1"
@@ -77,7 +81,9 @@ pipeline {
                     } catch (Exception e) {
                         echo "❌ Échec du déploiement en production ! Lancement du rollback vers ${previousImage}..."
                         env.IMAGE_REF = previousImage
-                        sh "${env.COMPOSE_PROD} up -d"
+                        withCredentials([string(credentialsId: 'redis-password-prod', variable: 'REDIS_PASSWORD')]) {
+                            sh "${env.COMPOSE_PROD} up -d"
+                        }
                         error("Le déploiement a échoué, le rollback a été appliqué avec succès.")
                     }
                 }
